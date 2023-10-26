@@ -7,7 +7,7 @@ from typing import Tuple
 from transformers import BertForSequenceClassification, BertTokenizer, AdamW
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,22 +69,29 @@ class BertClassifier:
         """
         Train the model with the given tokenized datasets and trial.
         """
-        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
-        learning_rate = trial.suggest_loguniform('lr', 1e-5, 1e-3)
-        epochs = trial.suggest_int('epochs', 1, 5)
+        try:
+            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+            learning_rate = trial.suggest_loguniform('lr', 1e-5, 1e-3)
+            epochs = trial.suggest_int('epochs', 1, 5)
 
-        train_dataloader = DataLoader(tokenized_datasets['train'], batch_size=batch_size, shuffle=True)
-        optimizer = AdamW(self.model.parameters(), lr=learning_rate)
+            train_dataloader = DataLoader(tokenized_datasets['train'], batch_size=batch_size, shuffle=True)
+            optimizer = AdamW(self.model.parameters(), lr=learning_rate)
 
-        for epoch in range(epochs):
-            for batch in train_dataloader:
-                outputs = self.model(**batch)
-                loss = outputs.loss
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
+            for epoch in range(epochs):
+                logger.info(f"Starting epoch {epoch+1}/{epochs}")
+                for batch in train_dataloader:
+                    self.model.train()
+                    outputs = self.model(**batch)
+                    loss = outputs.loss
+                    loss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+                logger.info(f"Finished epoch {epoch+1}/{epochs}")
 
-        return self.evaluate_model(tokenized_datasets, batch_size)
+            return self.evaluate_model(tokenized_datasets, batch_size)
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
+            raise
 
     def save_model(self, path: str = './model'):
         """
@@ -130,6 +137,7 @@ class BertClassifier:
         recall = recall_score(true_labels, predictions, average='weighted')
         f1 = f1_score(true_labels, predictions, average='weighted')
         logger.info(f'Test Accuracy: {accuracy}, Precision: {precision}, Recall: {recall}, F1: {f1}')
+        logger.info(classification_report(true_labels, predictions))
         return accuracy, precision, recall, f1
 
 def main():
