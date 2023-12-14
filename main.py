@@ -16,7 +16,7 @@ class BertClassifier:
     """
     BERT Classifier for sequence classification tasks.
     """
-    def __init__(self, model_name: str = 'bert-base-uncased', device: str = 'cpu'):
+    def __init__(self, model_name: str = 'bert-base-uncased', device: str = 'mps'):
         self.model, self.tokenizer = self.load_model_and_tokenizer(model_name)
         self.device = self.set_device(device)
         self.model.to(self.device)
@@ -59,7 +59,7 @@ class BertClassifier:
             def tokenize_function(examples):
                 return self.tokenizer(examples["sentence"], padding="max_length", truncation=True)
             tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
-            tokenized_datasets.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'], device=self.device)
+            tokenized_datasets.set_format(type='torch', columns=['input_ids', 'attention_mask', 'label'], device=self.device)
             return tokenized_datasets
         except Exception as e:
             logger.error(f"Error loading and preprocessing data: {e}")
@@ -70,23 +70,29 @@ class BertClassifier:
         Train the model with the given tokenized datasets and trial.
         """
         try:
-            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+            batch_size = trial.suggest_categorical('batch_size', [8, 16, 32])
             learning_rate = trial.suggest_loguniform('lr', 1e-5, 1e-3)
             epochs = trial.suggest_int('epochs', 1, 5)
+            gradient_accumulation_steps = trial.suggest_int('gradient_accumulation_steps', 1, 5)
 
             train_dataloader = DataLoader(tokenized_datasets['train'], batch_size=batch_size, shuffle=True)
             optimizer = AdamW(self.model.parameters(), lr=learning_rate)
 
             for epoch in range(epochs):
                 logger.info(f"Starting epoch {epoch+1}/{epochs}")
-                for batch in train_dataloader:
+                for step, batch in enumerate(train_dataloader):
                     self.model.train()
-                    outputs = self.model(**batch)
+                    inputs = {key: value for key, value in batch.items() if key != 'label'}
+                    labels = batch['label']
+                    outputs = self.model(**inputs, labels=labels)
                     loss = outputs.loss
+                    loss = loss / gradient_accumulation_steps
                     loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
+                    if (step + 1) % gradient_accumulation_steps == 0:
+                        optimizer.step()
+                        optimizer.zero_grad()
                 logger.info(f"Finished epoch {epoch+1}/{epochs}")
+                self.save_model(f'./model_epoch_{epoch+1}')
 
             return self.evaluate_model(tokenized_datasets, batch_size)
         except Exception as e:
@@ -127,9 +133,11 @@ class BertClassifier:
         self.model.eval()
         for batch in test_dataloader:
             with torch.no_grad():
-                outputs = self.model(**batch)
+                inputs = {key: value for key, value in batch.items() if key != 'labels'}
+                labels = batch['label']
+                outputs = self.model(**inputs, labels=labels)
             logits = outputs.logits.detach().cpu().numpy()
-            labels = batch['labels'].detach().cpu().numpy()
+            labels = labels.detach().cpu().numpy()
             predictions.extend(np.argmax(logits, axis=1))
             true_labels.extend(labels)
         accuracy = accuracy_score(true_labels, predictions)
